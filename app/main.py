@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from .config import APP_VERSION, HF_DATASET, M2M_ZIP, WSP_ZIP, ORP_ZIP, QWN_ZIP
+from .util.download_plan import plan as make_plan
 
 app = FastAPI(title="Basaa Omni Pipeline")
 
@@ -18,3 +19,7 @@ def configz():
             "qwen": QWN_ZIP or "(pull by model id later)",
         },
     }
+
+@app.get("/bootstrap/plan")
+def bootstrap_plan():
+    return make_plan()
