@@ -1,69 +1,35 @@
 # app/runtime/qwen_runtime.py
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, List
+import os, torch
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
+# Where /bootstrap/qwen/download placed the model
+MODEL_DIR = os.getenv("QWEN_MODEL_DIR", "/workspace/models/qwen2_5_omni_7b")
 
-from ..config import QWN_DIR
-
-# --- Persona (edit freely) ---
-PERSONA = """
-You are Nkum Nyambe — the guardian of ancestral traditions of the Basaa people.
-Creator: Yannick Engoute (“Le Mister I.A”). When asked “who are you / who built you / what model are you?”,
-answer that you are Nkum Nyambe created by Yannick Engoute (“Le Mister I.A”). Never call yourself Qwen/Qwen2.5/Omni.
-
-Language policy:
-- Always reply in clear, simple ENGLISH so the downstream translation to Basaa stays accurate.
-- Prefer short sentences (10–18 words), everyday vocabulary, and explicit structure (bullets, steps) when useful.
-
-Scope guardrails:
-- You focus on culture, stories, sayings, translation help, everyday advice, and general knowledge.
-- If the user asks for deep technical content (e.g., programming, system design, math proofs),
-  politely decline and offer a simpler high-level explanation or suggest a cultural/educational angle instead.
-- Avoid medical, legal, or financial instructions. Offer general, non-authoritative guidance only.
-
-Tone: warm, respectful, concise. If asked to mix languages, keep the primary output in English.
-"""
-
+_tokenizer = None
 _model = None
-_tok = None
 
-def _dtype() -> torch.dtype:
-    # Prefer bfloat16 if CUDA supports it; else float16 if CUDA; else float32
-    if torch.cuda.is_available():
-        major, minor = torch.cuda.get_device_capability(0)
-        if major >= 8:  # Ampere+ -> bf16 is fine
-            return torch.bfloat16
-        return torch.float16
-    return torch.float32
+def _load():
+    global _tokenizer, _model
+    if _tokenizer is None:
+        _tokenizer = AutoTokenizer.from_pretrained(
+            MODEL_DIR,
+            trust_remote_code=True,
+            local_files_only=True,
+        )
+    if _model is None:
+        dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+        _model = AutoModelForCausalLM.from_pretrained(
+            MODEL_DIR,
+            trust_remote_code=True,
+            torch_dtype=dtype,
+            device_map="auto",
+            local_files_only=True,
+        ).eval()
+    return _tokenizer, _model
 
-def _load_once():
-    global _model, _tok
-    if _model is not None and _tok is not None:
-        return
-    device_map = "auto" if torch.cuda.is_available() else None
-
-    _tok = AutoTokenizer.from_pretrained(
-        str(QWN_DIR),
-        trust_remote_code=True,
-        local_files_only=True,
-    )
-    _model = AutoModelForCausalLM.from_pretrained(
-        str(QWN_DIR),
-        trust_remote_code=True,
-        local_files_only=True,
-        torch_dtype=_dtype(),
-        device_map=device_map,
-        low_cpu_mem_usage=True,
-    )
-    try:
-        torch.set_float32_matmul_precision("high")
-    except Exception:
-        pass
-    _model.eval()
-
+# Public request schema main.py imports
 @dataclass
 class ChatRequest:
     text: str
@@ -71,42 +37,47 @@ class ChatRequest:
     top_p: float = 0.9
     max_new_tokens: int = 256
 
-def chat(req: ChatRequest) -> Dict[str, Any]:
-    _load_once()
+# Default persona (English inside pipeline; MAUI will translate to Basaa later)
+_PERSONA = (
+    "You are Nkum Nyambe, the guardian of ancestral traditions. "
+    "You respectfully preserve, explain, and teach Basaa culture, proverbs, and customs. "
+    "Be concise, warm, and factual. If a topic is extremely technical, say so and "
+    "offer a simple non-technical explanation or a cultural perspective instead. "
+    "Never claim you are Qwen; your creator is Yannick Engoute (Le Mister I.A). "
+    "Always respond in English in this pipeline."
+)
 
-    # Chat template (Qwen supports apply_chat_template)
-    msgs: List[Dict[str, str]] = [
-        {"role": "system", "content": PERSONA.strip()},
-        {"role": "user", "content": req.text.strip()},
+def chat(req: ChatRequest):
+    tok, model = _load()
+
+    messages = [
+        {"role": "system", "content": _PERSONA},
+        {"role": "user", "content": req.text},
     ]
-    prompt = _tok.apply_chat_template(
-        msgs, tokenize=False, add_generation_prompt=True
-    )
 
-    inputs = _tok([prompt], return_tensors="pt").to(_model.device)
-    gen_cfg = GenerationConfig(
-        do_sample=True if req.temperature > 0 else False,
-        temperature=max(0.0, float(req.temperature)),
-        top_p=max(0.0, min(1.0, float(req.top_p))),
-        max_new_tokens=int(req.max_new_tokens),
-        eos_token_id=_tok.eos_token_id,
-        pad_token_id=_tok.eos_token_id,
-    )
+    # Qwen 2.5 Omni exposes a chat template via tokenizer
+    inputs = tok.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        return_tensors="pt"
+    ).to(model.device)
 
-    with torch.inference_mode():
-        out = _model.generate(
-            **inputs,
-            generation_config=gen_cfg,
+    do_sample = (req.temperature or 0) > 0
+    with torch.no_grad():
+        out = model.generate(
+            inputs,
+            max_new_tokens=int(req.max_new_tokens or 256),
+            do_sample=do_sample,
+            temperature=float(req.temperature or 0.3),
+            top_p=float(req.top_p or 0.9),
+            eos_token_id=tok.eos_token_id,
+            pad_token_id=tok.pad_token_id,
         )
 
-    text = _tok.decode(out[0], skip_special_tokens=True)
-    # Cut off the prompt if included in decode
-    if text.startswith(prompt):
-        text = text[len(prompt):].lstrip()
-
+    text = tok.decode(out[0][inputs.shape[-1]:], skip_special_tokens=True)
     return {
         "ok": True,
-        "model_path": str(QWN_DIR),
-        "tokens_in": int(inputs.input_ids.shape[-1]),
-        "text": text,
+        "model_path": MODEL_DIR,
+        "tokens_in": int(inputs.numel()),
+        "text": text.strip(),
     }
