@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from .config import APP_VERSION, HF_DATASET, M2M_ZIP, WSP_ZIP, ORP_ZIP, QWN_ZIP
 from .util.download_plan import plan as make_plan
+from .util.downloader import ensure_core_models
 
 app = FastAPI(title="Basaa Omni Pipeline")
 
@@ -23,3 +24,8 @@ def configz():
 @app.get("/bootstrap/plan")
 def bootstrap_plan():
     return make_plan()
+
+@app.post("/bootstrap/download")
+def bootstrap_download():
+    """Pull zips from your HF dataset and extract into /workspace/models/* (idempotent)."""
+    return ensure_core_models()
