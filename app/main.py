@@ -1,8 +1,13 @@
+from __future__ import annotations
+
+import os
+import threading
+import time
+from typing import Dict, Any, Optional
+
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import Dict, Any
-import threading, time
 
 from .config import (
     APP_VERSION, HF_DATASET, M2M_ZIP, WSP_ZIP, ORP_ZIP, QWN_ZIP, QWN_REPO
@@ -61,8 +66,21 @@ def _get_job(name: str) -> Dict[str, Any]:
 
 # -----------------------------------------------------------------------------
 
+
 @app.get("/healthz")
 def healthz():
+    # Best-effort versions (don’t fail health if imports are missing)
+    vers = {}
+    try:
+        import transformers, torch, huggingface_hub
+        vers = {
+            "transformers": transformers.__version__,
+            "torch": torch.__version__,
+            "huggingface_hub": huggingface_hub.__version__,
+        }
+    except Exception:
+        pass
+
     return {
         "ok": True,
         "service": "basaa-omni",
@@ -70,7 +88,9 @@ def healthz():
         "qwen": HAVE_QWEN,
         "qwen_ping": HAVE_QWEN_PING,
         "qwen_chat": HAVE_QWEN_CHAT,
+        "versions": vers,
     }
+
 
 @app.get("/configz")
 def configz():
@@ -83,16 +103,23 @@ def configz():
             "qwen": QWN_ZIP or "(pull by model id later)",
         },
         "qwen_repo": QWN_REPO,
+        "env": {
+            "PERSIST_DIR": os.getenv("PERSIST_DIR", "/workspace"),
+            "QWEN_MODEL_DIR": os.getenv("QWEN_MODEL_DIR", "/workspace/models/qwen2_5_omni_7b"),
+        },
     }
+
 
 @app.get("/bootstrap/plan")
 def bootstrap_plan():
     return make_plan()
 
+
 @app.post("/bootstrap/download")
 def bootstrap_download():
     # Synchronous path (can hit Cloudflare timeout for large bundles)
     return ensure_core_models()
+
 
 # ---- Async bootstrap to avoid Cloudflare 524 on long downloads ----
 @app.post("/bootstrap/download_async")
@@ -104,10 +131,12 @@ def bootstrap_download_async():
     _start_job("core_bootstrap", ensure_core_models)
     return {"ok": True, "job": "core_bootstrap"}
 
+
 @app.get("/bootstrap/status")
 def bootstrap_status():
     """Poll the status/result of the async core bootstrap."""
     return _get_job("core_bootstrap")
+
 
 # --- Qwen bootstrap endpoints ---
 if HAVE_QWEN:
@@ -117,7 +146,10 @@ if HAVE_QWEN:
 
     @app.post("/bootstrap/qwen/download")
     def qwen_download():
+        # This ensures both weights AND the repo's *.py files are present,
+        # so trust_remote_code=True works offline.
         return ensure_qwen()
+
 
 # --- Qwen ping (never 500; returns debug JSON on error) ---
 if HAVE_QWEN_PING:
@@ -128,12 +160,14 @@ if HAVE_QWEN_PING:
         except Exception as e:
             return JSONResponse(status_code=200, content={"ok": False, "error": str(e)})
 
+
 # ---------- Qwen text chat: English in → English out ----------
 class QwenChatIn(BaseModel):
     text: str
-    temperature: float | None = 0.3
-    top_p: float | None = 0.9
-    max_new_tokens: int | None = 256
+    temperature: Optional[float] = 0.3
+    top_p: Optional[float] = 0.9
+    max_new_tokens: Optional[int] = 256
+
 
 @app.post("/chat/qwen")
 def qwen_chat(body: QwenChatIn):
@@ -149,3 +183,17 @@ def qwen_chat(body: QwenChatIn):
         return _qwen_chat(req)
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+# --------- Debug: library versions (explicit) ----------
+@app.get("/debug/versions")
+def debug_versions():
+    try:
+        import transformers, torch, huggingface_hub
+        return {
+            "transformers": transformers.__version__,
+            "torch": torch.__version__,
+            "huggingface_hub": huggingface_hub.__version__,
+        }
+    except Exception as e:
+        return {"error": str(e)}
