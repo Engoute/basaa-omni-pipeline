@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from typing import Dict, Any
+import threading, time
 
 from .config import (
     APP_VERSION, HF_DATASET, M2M_ZIP, WSP_ZIP, ORP_ZIP, QWN_ZIP, QWN_REPO
@@ -30,6 +32,34 @@ except Exception:
     HAVE_QWEN_CHAT = False
 
 app = FastAPI(title="Basaa Omni Pipeline")
+
+# ---------------- Background job helpers (avoid CF 524 timeouts) ----------------
+_jobs: Dict[str, Dict[str, Any]] = {}
+
+def _start_job(name: str, target):
+    """
+    Fire-and-forget background job runner.
+    Stores status/result in `_jobs[name]`.
+    """
+    if name in _jobs and _jobs[name].get("status") in {"running", "done"}:
+        return _jobs[name]
+
+    _jobs[name] = {"status": "running", "started": time.time()}
+
+    def _run():
+        try:
+            res = target()
+            _jobs[name].update({"status": "done", "result": res, "finished": time.time()})
+        except Exception as e:
+            _jobs[name].update({"status": "error", "error": str(e), "finished": time.time()})
+
+    threading.Thread(target=_run, daemon=True).start()
+    return _jobs[name]
+
+def _get_job(name: str) -> Dict[str, Any]:
+    return _jobs.get(name, {"status": "unknown"})
+
+# -----------------------------------------------------------------------------
 
 @app.get("/healthz")
 def healthz():
@@ -61,7 +91,23 @@ def bootstrap_plan():
 
 @app.post("/bootstrap/download")
 def bootstrap_download():
+    # Synchronous path (can hit Cloudflare timeout for large bundles)
     return ensure_core_models()
+
+# ---- Async bootstrap to avoid Cloudflare 524 on long downloads ----
+@app.post("/bootstrap/download_async")
+def bootstrap_download_async():
+    """
+    Starts the core model download/extract in a background thread and
+    returns immediately with a job id to poll.
+    """
+    _start_job("core_bootstrap", ensure_core_models)
+    return {"ok": True, "job": "core_bootstrap"}
+
+@app.get("/bootstrap/status")
+def bootstrap_status():
+    """Poll the status/result of the async core bootstrap."""
+    return _get_job("core_bootstrap")
 
 # --- Qwen bootstrap endpoints ---
 if HAVE_QWEN:
