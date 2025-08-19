@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from .config import (
     APP_VERSION, HF_DATASET, M2M_ZIP, WSP_ZIP, ORP_ZIP, QWN_ZIP, QWN_REPO
 )
@@ -22,7 +23,13 @@ app = FastAPI(title="Basaa Omni Pipeline")
 
 @app.get("/healthz")
 def healthz():
-    return {"ok": True, "service": "basaa-omni", "version": APP_VERSION, "qwen": HAVE_QWEN, "qwen_ping": HAVE_QWEN_PING}
+    return {
+        "ok": True,
+        "service": "basaa-omni",
+        "version": APP_VERSION,
+        "qwen": HAVE_QWEN,
+        "qwen_ping": HAVE_QWEN_PING,
+    }
 
 @app.get("/configz")
 def configz():
@@ -58,4 +65,8 @@ if HAVE_QWEN:
 if HAVE_QWEN_PING:
     @app.get("/qwen/ping")
     def qwen_ping():
-        return _ping_qwen()
+        try:
+            return _ping_qwen()
+        except Exception as e:
+            # Never 500 here; return a debuggable JSON payload instead
+            return JSONResponse(status_code=200, content={"ok": False, "error": str(e)})
