@@ -12,11 +12,17 @@ try:
 except Exception:
     HAVE_QWEN = False
 
+HAVE_QWEN_PING = True
+try:
+    from .util.qwen_ping import ping_qwen as _ping_qwen
+except Exception:
+    HAVE_QWEN_PING = False
+
 app = FastAPI(title="Basaa Omni Pipeline")
 
 @app.get("/healthz")
 def healthz():
-    return {"ok": True, "service": "basaa-omni", "version": APP_VERSION, "qwen": HAVE_QWEN}
+    return {"ok": True, "service": "basaa-omni", "version": APP_VERSION, "qwen": HAVE_QWEN, "qwen_ping": HAVE_QWEN_PING}
 
 @app.get("/configz")
 def configz():
@@ -37,10 +43,9 @@ def bootstrap_plan():
 
 @app.post("/bootstrap/download")
 def bootstrap_download():
-    """Pull zipped bundles (m2m, whisper, orpheus) and extract into /workspace/models/*."""
     return ensure_core_models()
 
-# Qwen endpoints only if module available
+# Qwen endpoints
 if HAVE_QWEN:
     @app.get("/bootstrap/qwen/plan")
     def qwen_plan():
@@ -49,3 +54,8 @@ if HAVE_QWEN:
     @app.post("/bootstrap/qwen/download")
     def qwen_download():
         return ensure_qwen()
+
+if HAVE_QWEN_PING:
+    @app.get("/qwen/ping")
+    def qwen_ping():
+        return _ping_qwen()
