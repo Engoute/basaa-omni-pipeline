@@ -2,7 +2,7 @@ import os, zipfile, time
 from pathlib import Path
 from huggingface_hub import hf_hub_download
 from ..config import (
-    HF_DATASET, M2M_ZIP, WSP_ZIP, ORP_ZIP, QWN_ZIP,
+    HF_DATASET, M2M_ZIP, WSP_ZIP, ORP_ZIP,
     PERSIST_DIR, BUNDLES_DIR, MODELS_DIR
 )
 
@@ -13,14 +13,13 @@ def _ensure_dirs():
         d.mkdir(parents=True, exist_ok=True)
 
 def _download_zip_from_dataset(filename: str) -> Path:
-    # Downloads to /workspace/bundles/<name>.zip
     local = hf_hub_download(
         repo_id=HF_DATASET,
         repo_type="dataset",
         filename=filename,
         local_dir=BUNDLES_DIR,
         local_dir_use_symlinks=False,
-        token=os.getenv("HF_TOKEN") or None,   # optional
+        token=os.getenv("HF_TOKEN") or None,
     )
     return Path(local)
 
@@ -55,5 +54,4 @@ def ensure_core_models():
     reports.append(_ensure_one("m2m", M2M_ZIP, MODELS_DIR / "m2m100_1p2b_basaa"))
     reports.append(_ensure_one("whisper", WSP_ZIP, MODELS_DIR / "whisper_large_v3_ct2"))
     reports.append(_ensure_one("orpheus", ORP_ZIP, MODELS_DIR / "orpheus_3b_basaa"))
-    # Qwen will be handled later
     return {"ts": _now(), "dataset": HF_DATASET, "reports": reports}
