@@ -3,7 +3,6 @@ from typing import Dict, Any, List
 import traceback
 import torch
 from transformers import AutoConfig, AutoTokenizer
-
 from ..config import QWN_DIR
 
 def _dir_size_bytes(root: Path) -> int:
@@ -35,14 +34,12 @@ def ping_qwen() -> Dict[str, Any]:
         info["config_error"] = f"{type(e).__name__}: {e}"
         info["config_trace"] = traceback.format_exc(limit=2)
 
-    # Try tokenizer first
     try:
         tok = AutoTokenizer.from_pretrained(str(QWN_DIR), local_files_only=True, trust_remote_code=True)
         info["tokenizer_class"] = tok.__class__.__name__
         info["tokenizer_vocab_size"] = getattr(tok, "vocab_size", None)
         info["probe_tokens"] = tok.encode("hello", add_special_tokens=False)[:8]
         info["ok"] = True
-        # device probe
         info["cuda"] = torch.cuda.is_available()
         info["device"] = (torch.cuda.get_device_name(0) if info["cuda"] else "cpu")
         return info
@@ -50,7 +47,6 @@ def ping_qwen() -> Dict[str, Any]:
         info["tokenizer_error"] = f"{type(e_tok).__name__}: {e_tok}"
         info["tokenizer_trace"] = traceback.format_exc(limit=2)
 
-    # Fallback: some Omni variants prefer AutoProcessor
     try:
         from transformers import AutoProcessor
         proc = AutoProcessor.from_pretrained(str(QWN_DIR), local_files_only=True, trust_remote_code=True)
