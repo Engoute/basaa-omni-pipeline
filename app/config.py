@@ -1,10 +1,10 @@
 from pathlib import Path
 import os
 
-# Persistent base (on RunPod this is your Volume Disk mount)
+# Persistent base (RunPod volume mount)
 PERSIST_DIR = Path(os.getenv("PERSIST_DIR", "/workspace")).resolve()
 
-# Your HF dataset (zipped bundles for m2m, whisper, orpheus)
+# HF dataset with zipped bundles
 HF_DATASET  = os.getenv("HF_DATASET", "LeMisterIA/basaa-models")
 M2M_ZIP     = os.getenv("M2M_ZIP", "bundles/m2m100_bundle_20250817_155147.zip")
 WSP_ZIP     = os.getenv("WSP_ZIP", "bundles/whisper_bundle_20250817_163830.zip")
