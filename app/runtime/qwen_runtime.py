@@ -1,8 +1,6 @@
-# app/runtime/qwen_runtime.py
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import torch
@@ -21,7 +19,7 @@ _device = "cuda" if torch.cuda.is_available() else "cpu"
 _dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
 
 _tokenizer: Optional[AutoTokenizer] = None
-_model: Optional[AutoModelForCausalLM] = None
+_model = None
 _processor: Optional[AutoProcessor] = None
 
 
@@ -31,19 +29,19 @@ def _load_once() -> None:
     if _model is not None and _tokenizer is not None:
         return
 
-    # Some Qwen repos ship custom modeling code; this flag is required.
-    # Using device_map="auto" so it lands on GPU if present.
-    cfg = AutoConfig.from_pretrained(QWEN_PATH, trust_remote_code=True)
+    # ensure config loads with remote code
+    AutoConfig.from_pretrained(QWEN_PATH, trust_remote_code=True)
 
-    _tokenizer = AutoTokenizer.from_pretrained(QWEN_PATH, trust_remote_code=True, use_fast=True)
+    _tokenizer = AutoTokenizer.from_pretrained(
+        QWEN_PATH, trust_remote_code=True, use_fast=True
+    )
 
     try:
-        # For multimodal (images/video/audio). Text-only path works without it,
-        # but we keep it ready for later.
         _processor = AutoProcessor.from_pretrained(QWEN_PATH, trust_remote_code=True)
     except Exception:
         _processor = None  # fine for pure text
 
+    # Remote code will return the correct class for qwen2_5_omni
     _model = AutoModelForCausalLM.from_pretrained(
         QWEN_PATH,
         torch_dtype=_dtype,
@@ -61,10 +59,6 @@ class ChatRequest(BaseModel):
 
 
 def _render_chat(messages: list[dict[str, str]]) -> Dict[str, Any]:
-    """
-    Use the model's chat template if present; otherwise fall back to a simple
-    prompt format. Returns dict with 'input_ids' on the model's device.
-    """
     assert _tokenizer is not None and _model is not None
 
     try:
@@ -76,7 +70,7 @@ def _render_chat(messages: list[dict[str, str]]) -> Dict[str, Any]:
         ).to(_model.device)
         return {"input_ids": input_ids}
     except Exception:
-        # Fallback: minimal prompt
+        # Minimal fallback prompt
         text = ""
         for m in messages:
             role = m.get("role", "user")
@@ -104,13 +98,10 @@ def chat(req: ChatRequest) -> Dict[str, Any]:
         pad_token_id=_tokenizer.pad_token_id,
     )
 
-    # Decode and strip the prompt using the tokenizer's helper if available.
     try:
         text_out = _tokenizer.decode(gen[0], skip_special_tokens=True)
-        # If apply_chat_template was used, the response usually appears after the last "assistant" turn.
-        split_tok = "assistant"
-        if split_tok in text_out:
-            text_out = text_out.split(split_tok, maxsplit=1)[-1].strip(" :\n")
+        if "assistant" in text_out:
+            text_out = text_out.split("assistant", 1)[-1].strip(" :\n")
     except Exception:
         text_out = _tokenizer.batch_decode(gen, skip_special_tokens=True)[0]
 
@@ -118,7 +109,6 @@ def chat(req: ChatRequest) -> Dict[str, Any]:
 
 
 def info() -> Dict[str, Any]:
-    """Small introspection endpoint to help debugging in /chat/qwen/info."""
     import transformers
     return {
         "ok": True,
