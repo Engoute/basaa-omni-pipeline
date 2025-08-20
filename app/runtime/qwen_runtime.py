@@ -1,83 +1,132 @@
 # app/runtime/qwen_runtime.py
 from __future__ import annotations
+
+import os
 from dataclasses import dataclass
-import os, torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from typing import Any, Dict, Optional
+
+import torch
+from pydantic import BaseModel
+from transformers import (
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    AutoProcessor,
+    AutoConfig,
+)
 
 # Where /bootstrap/qwen/download placed the model
-MODEL_DIR = os.getenv("QWEN_MODEL_DIR", "/workspace/models/qwen2_5_omni_7b")
+QWEN_PATH = os.environ.get("QWEN_PATH", "/workspace/models/qwen2_5_omni_7b")
 
-_tokenizer = None
-_model = None
+_device = "cuda" if torch.cuda.is_available() else "cpu"
+_dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
 
-def _load():
-    global _tokenizer, _model
-    if _tokenizer is None:
-        _tokenizer = AutoTokenizer.from_pretrained(
-            MODEL_DIR,
-            trust_remote_code=True,
-            local_files_only=True,
-        )
-    if _model is None:
-        dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
-        _model = AutoModelForCausalLM.from_pretrained(
-            MODEL_DIR,
-            trust_remote_code=True,
-            torch_dtype=dtype,
-            device_map="auto",
-            local_files_only=True,
-        ).eval()
-    return _tokenizer, _model
+_tokenizer: Optional[AutoTokenizer] = None
+_model: Optional[AutoModelForCausalLM] = None
+_processor: Optional[AutoProcessor] = None
 
-# Public request schema main.py imports
-@dataclass
-class ChatRequest:
+
+def _load_once() -> None:
+    """Lazy-load tokenizer/model/processor with trust_remote_code."""
+    global _tokenizer, _model, _processor
+    if _model is not None and _tokenizer is not None:
+        return
+
+    # Some Qwen repos ship custom modeling code; this flag is required.
+    # Using device_map="auto" so it lands on GPU if present.
+    cfg = AutoConfig.from_pretrained(QWEN_PATH, trust_remote_code=True)
+
+    _tokenizer = AutoTokenizer.from_pretrained(QWEN_PATH, trust_remote_code=True, use_fast=True)
+
+    try:
+        # For multimodal (images/video/audio). Text-only path works without it,
+        # but we keep it ready for later.
+        _processor = AutoProcessor.from_pretrained(QWEN_PATH, trust_remote_code=True)
+    except Exception:
+        _processor = None  # fine for pure text
+
+    _model = AutoModelForCausalLM.from_pretrained(
+        QWEN_PATH,
+        torch_dtype=_dtype,
+        device_map="auto" if torch.cuda.is_available() else None,
+        low_cpu_mem_usage=True,
+        trust_remote_code=True,
+    ).eval()
+
+
+class ChatRequest(BaseModel):
     text: str
     temperature: float = 0.3
     top_p: float = 0.9
     max_new_tokens: int = 256
 
-# Default persona (English inside pipeline; MAUI will translate to Basaa later)
-_PERSONA = (
-    "You are Nkum Nyambe, the guardian of ancestral traditions. "
-    "You respectfully preserve, explain, and teach Basaa culture, proverbs, and customs. "
-    "Be concise, warm, and factual. If a topic is extremely technical, say so and "
-    "offer a simple non-technical explanation or a cultural perspective instead. "
-    "Never claim you are Qwen; your creator is Yannick Engoute (Le Mister I.A). "
-    "Always respond in English in this pipeline."
-)
 
-def chat(req: ChatRequest):
-    tok, model = _load()
+def _render_chat(messages: list[dict[str, str]]) -> Dict[str, Any]:
+    """
+    Use the model's chat template if present; otherwise fall back to a simple
+    prompt format. Returns dict with 'input_ids' on the model's device.
+    """
+    assert _tokenizer is not None and _model is not None
 
-    messages = [
-        {"role": "system", "content": _PERSONA},
-        {"role": "user", "content": req.text},
-    ]
+    try:
+        input_ids = _tokenizer.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_tensors="pt",
+        ).to(_model.device)
+        return {"input_ids": input_ids}
+    except Exception:
+        # Fallback: minimal prompt
+        text = ""
+        for m in messages:
+            role = m.get("role", "user")
+            content = m.get("content", "")
+            text += f"{role}: {content}\n"
+        text += "assistant: "
+        input_ids = _tokenizer(text, return_tensors="pt").input_ids.to(_model.device)
+        return {"input_ids": input_ids}
 
-    # Qwen 2.5 Omni exposes a chat template via tokenizer
-    inputs = tok.apply_chat_template(
-        messages,
-        add_generation_prompt=True,
-        return_tensors="pt"
-    ).to(model.device)
 
-    do_sample = (req.temperature or 0) > 0
-    with torch.no_grad():
-        out = model.generate(
-            inputs,
-            max_new_tokens=int(req.max_new_tokens or 256),
-            do_sample=do_sample,
-            temperature=float(req.temperature or 0.3),
-            top_p=float(req.top_p or 0.9),
-            eos_token_id=tok.eos_token_id,
-            pad_token_id=tok.pad_token_id,
-        )
+def chat(req: ChatRequest) -> Dict[str, Any]:
+    _load_once()
+    assert _tokenizer is not None and _model is not None
 
-    text = tok.decode(out[0][inputs.shape[-1]:], skip_special_tokens=True)
+    messages = [{"role": "user", "content": req.text}]
+    inputs = _render_chat(messages)
+
+    gen = _model.generate(
+        **inputs,
+        do_sample=True,
+        temperature=float(req.temperature),
+        top_p=float(req.top_p),
+        max_new_tokens=int(req.max_new_tokens),
+        eos_token_id=_tokenizer.eos_token_id,
+        pad_token_id=_tokenizer.pad_token_id,
+    )
+
+    # Decode and strip the prompt using the tokenizer's helper if available.
+    try:
+        text_out = _tokenizer.decode(gen[0], skip_special_tokens=True)
+        # If apply_chat_template was used, the response usually appears after the last "assistant" turn.
+        split_tok = "assistant"
+        if split_tok in text_out:
+            text_out = text_out.split(split_tok, maxsplit=1)[-1].strip(" :\n")
+    except Exception:
+        text_out = _tokenizer.batch_decode(gen, skip_special_tokens=True)[0]
+
+    return {"ok": True, "text": text_out}
+
+
+def info() -> Dict[str, Any]:
+    """Small introspection endpoint to help debugging in /chat/qwen/info."""
+    import transformers
     return {
         "ok": True,
-        "model_path": MODEL_DIR,
-        "tokens_in": int(inputs.numel()),
-        "text": text.strip(),
+        "device": _device,
+        "dtype": str(_dtype),
+        "transformers": transformers.__version__,
+        "path": QWEN_PATH,
+        "tokenizer_loaded": _tokenizer is not None,
+        "model_loaded": _model is not None,
+        "processor_loaded": _processor is not None,
     }
