@@ -5,7 +5,6 @@ from ..config import (
 )
 
 def plan():
-    # standard target dirs we’ll reuse later
     m2m_dir = MODELS_DIR / "m2m100_1p2b_basaa"
     wsp_dir = MODELS_DIR / "whisper_large_v3_ct2"
     orp_dir = MODELS_DIR / "orpheus_3b_basaa"
@@ -34,7 +33,6 @@ def plan():
                 "extract_to": str(orp_dir),
             },
             "qwen": {
-                # later we will either use QWN_ZIP (if you upload one) or pull the model card
                 "zip": QWN_ZIP or "(none; pull from model repo)",
                 "zip_local": str(BUNDLES_DIR / Path(QWN_ZIP).name) if QWN_ZIP else "(n/a)",
                 "extract_to": str(qwn_dir),
