@@ -3,27 +3,24 @@ FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    HF_HUB_ENABLE_HF_TRANSFER=1
 
-# Python + pip
+# System Python & tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-venv ca-certificates curl git && \
     ln -sf /usr/bin/python3 /usr/local/bin/python && \
-    pip3 install --upgrade pip && \
+    python -m pip install --upgrade pip && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-RUN python -m pip install --upgrade pip
-
-
-# Install app deps (no uvicorn[standard])
+# App deps (includes uvicorn[standard]; we remove native bits to keep it pure-Python)
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt && \
-    # CUDA 12.1 wheels
-    pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu121 \
+RUN python -m pip install --no-cache-dir -r /app/requirements.txt && \
+    python -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu121 \
         torch==2.3.1 torchvision==0.18.1 torchaudio==2.3.1 && \
-    # Ensure pure-Python Uvicorn (remove native loop/http if preinstalled)
+    # keep pure asyncio/h11 (avoid uvloop/httptools edge-cases in some GPU bases)
     pip uninstall -y uvloop httptools || true
 
 # App code
