@@ -1,10 +1,10 @@
 fastapi==0.112.0
-uvicorn[standard]==0.30.6
+uvicorn==0.30.6
 pydantic==2.8.2
 
 huggingface_hub[hf_transfer]==0.26.2
-# Use latest transformers from Git (needed for qwen2_5_omni architecture)
-transformers @ git+https://github.com/huggingface/transformers.git
+# Install from a ZIP (no git clone) so it works behind strict networks:
+transformers @ https://github.com/huggingface/transformers/archive/refs/heads/main.zip
 accelerate>=0.33.0
 safetensors>=0.4.3
 einops>=0.7.0
