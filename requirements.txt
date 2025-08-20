@@ -1,21 +1,14 @@
 fastapi==0.112.0
-uvicorn[standard]==0.30.6
+uvicorn==0.30.6            # no [standard]; pure-Python
 pydantic==2.8.2
 
 huggingface_hub[hf_transfer]==0.26.2
-# Use a PyPI release (no GitHub clone during build)
-# If Qwen2.5-Omni still complains, we'll swap to a pinned commit as Plan B.
-transformers>=4.55.0
+transformers==4.52.3       # Qwen2.5-Omni support from PyPI
 accelerate>=0.33.0
 safetensors>=0.4.3
 einops>=0.7.0
 sentencepiece>=0.2.0
-tiktoken>=0.7.0
-
 numpy>=1.26
 
-# CUDA 12.1 wheels for PyTorch
---extra-index-url https://download.pytorch.org/whl/cu121
-torch==2.3.1
-torchvision==0.18.1
-torchaudio==2.3.1
+# Keep tiktoken out for now (can require rust). Add later if you need it.
+# tiktoken>=0.7.0
